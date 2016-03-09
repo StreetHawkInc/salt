@@ -2730,7 +2730,7 @@ class Matcher(object):
         comps = tgt.split(':')
         if len(comps) < 2:
             return False
-        val = self.functions['data.getval'](comps[0])
+        val = self.functions['data.get'](comps[0])
         if val is None:
             # The value is not defined
             return False
