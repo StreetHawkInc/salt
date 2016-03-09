@@ -1,4 +1,7 @@
-G# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
+# Import Python Futures
+from __future__ import absolute_import
+
 '''
 Management of Docker Containers
 
@@ -231,9 +234,6 @@ This execution module provides functions that shadow those from the :mod:`cmd
 Detailed Function Documentation
 -------------------------------
 '''
-
-# Import Python Futures
-from __future__ import absolute_import
 
 __docformat__ = 'restructuredtext en'
 
