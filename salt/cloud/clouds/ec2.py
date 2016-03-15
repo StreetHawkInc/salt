@@ -2733,7 +2733,7 @@ def create_attach_volumes(name, kwargs, call=None, wait_to_finish=True):
     return ret
 
 
-def stop(name, call=None):
+def stop(name, kwargs, call=None):
     '''
     Stop a node
     '''
@@ -2757,7 +2757,7 @@ def stop(name, call=None):
     return result
 
 
-def start(name, call=None):
+def start(name, kwargs, call=None):
     '''
     Start a node
     '''
@@ -3444,7 +3444,7 @@ def list_nodes_select(call=None):
     )
 
 
-def show_term_protect(name=None, instance_id=None, call=None, quiet=False):
+def show_term_protect(name=None, kwargs=None, instance_id=None, call=None, quiet=False):
     '''
     Show the details from EC2 concerning an AMI
     '''
