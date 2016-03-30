@@ -3009,7 +3009,7 @@ def rename(name, kwargs, call=None):
     )
 
 
-def destroy(name, call=None):
+def destroy(name, kwargs, call=None):
     '''
     Destroy a node. Will check termination protection and warn if enabled.
 
