@@ -80,7 +80,7 @@ from salt.ext.six.moves import filter
 HAS_LIBS = False
 try:
     import salt.utils.msazure
-    from salt.utils.msazure import object_to_dict
+    from salt.utils.msazure import object_to_dict as az_object_to_dict
     from azure.common.credentials import (
         UserPassCredentials,
         ServicePrincipalCredentials,
@@ -159,6 +159,12 @@ def __virtual__():
     cache = salt.cache.Cache(__opts__)
 
     return __virtualname__
+
+
+def object_to_dict(obj):
+    if hasattr(obj, 'as_dict'):
+        return obj.as_dict()
+    return az_object_to_dict(obj)
 
 
 def get_configured_provider():
@@ -563,7 +569,7 @@ def show_instance(name, resource_group=None, call=None):  # pylint: disable=unus
         data['network_profile']['network_interfaces'] = []
 
     for iface in data['network_profile']['network_interfaces']:
-        iface_name = iface.id.split('/')[-1]
+        iface_name = iface['id'].split('/')[-1]
         iface_data = show_interface(kwargs={
             'resource_group': resource_group,
             'iface_name': iface_name,
