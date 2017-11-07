@@ -185,7 +185,9 @@ def collectstatic(settings_module,
                   link=False,
                   no_default_ignore=False,
                   pythonpath=None,
-                  env=None):
+                  env=None,
+                  verbosity=None,
+                      ):
     '''
     Collect static files from each of your applications into a single location
     that can easily be served in production.
@@ -210,6 +212,8 @@ def collectstatic(settings_module,
         args.append('link')
     if no_default_ignore:
         args.append('no-default-ignore')
+    if verbosity:
+        kwargs['verbosity'] = verbosity
 
     return command(settings_module,
                    'collectstatic',
