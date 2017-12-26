@@ -19,6 +19,7 @@ import logging
 import salt.utils.dictupdate
 import salt.utils.path
 import salt.utils.platform
+from salt.modules.zfs import _conform_value
 
 # Solve the Chicken and egg problem where grains need to run before any
 # of the modules are loaded and are generally available for any usage.
@@ -70,10 +71,8 @@ def _zfs_support():
             on_supported_platform = _check_retcode('ls /sys/module/zfs')
 
         # NOTE: fallback to zfs-fuse if needed
-        if not on_supported_platform:
-            _zfs_fuse = lambda f: __salt__['service.' + f]('zfs-fuse')
-            if _zfs_fuse('available') and (_zfs_fuse('status') or _zfs_fuse('start')):
-                on_supported_platform = True
+        if not on_supported_platform and salt.utils.path.which('zfs-fuse'):
+            on_supported_platform = True
 
     # Additional check for the zpool command
     if on_supported_platform and salt.utils.path.which('zpool'):
@@ -90,11 +89,11 @@ def _zfs_pool_data():
 
     # collect zpool data
     zpool_cmd = salt.utils.path.which('zpool')
-    for zpool in __salt__['cmd.run']('{zpool} list -H -o name,size'.format(zpool=zpool_cmd)).splitlines():
+    for zpool in __salt__['cmd.run']('{zpool} list -H -p -o name,size'.format(zpool=zpool_cmd)).splitlines():
         if 'zpool' not in grains:
             grains['zpool'] = {}
         zpool = zpool.split()
-        grains['zpool'][zpool[0]] = zpool[1]
+        grains['zpool'][zpool[0]] = _conform_value(zpool[1], True)
 
     # return grain data
     return grains

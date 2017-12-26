@@ -38,10 +38,12 @@ import salt.utils.minions
 import salt.utils.gzip_util
 import salt.utils.jid
 import salt.utils.minions
+import salt.utils.path
 import salt.utils.platform
 import salt.utils.stringutils
 import salt.utils.user
 import salt.utils.verify
+import salt.utils.versions
 from salt.defaults import DEFAULT_TARGET_DELIM
 from salt.pillar import git_pillar
 from salt.exceptions import FileserverConfigError, SaltMasterError
@@ -143,7 +145,7 @@ def clean_pub_auth(opts):
         if not os.path.exists(auth_cache):
             return
         else:
-            for (dirpath, dirnames, filenames) in os.walk(auth_cache):
+            for (dirpath, dirnames, filenames) in salt.utils.path.os_walk(auth_cache):
                 for auth_file in filenames:
                     auth_file_path = os.path.join(dirpath, auth_file)
                     if not os.path.isfile(auth_file_path):
@@ -184,11 +186,11 @@ def mk_key(opts, user):
         # The username may contain '\' if it is in Windows
         # 'DOMAIN\username' format. Fix this for the keyfile path.
         keyfile = os.path.join(
-            opts['cachedir'], '.{0}_key'.format(user.replace('\\', '_'))
+            opts['key_dir'], '.{0}_key'.format(user.replace('\\', '_'))
         )
     else:
         keyfile = os.path.join(
-            opts['cachedir'], '.{0}_key'.format(user)
+            opts['key_dir'], '.{0}_key'.format(user)
         )
 
     if os.path.exists(keyfile):
@@ -283,46 +285,23 @@ class AutoKey(object):
             return True
 
         # After we've ascertained we're not on windows
-        try:
-            user = self.opts['user']
-            pwnam = pwd.getpwnam(user)
-            uid = pwnam[2]
-            gid = pwnam[3]
-            groups = salt.utils.user.get_gid_list(user, include_default=False)
-        except KeyError:
-            log.error(
-                'Failed to determine groups for user {0}. The user is not '
-                'available.\n'.format(
-                    user
-                )
-            )
-            return False
-
+        groups = salt.utils.user.get_gid_list(self.opts['user'], include_default=False)
         fmode = os.stat(filename)
 
-        if os.getuid() == 0:
-            if fmode.st_uid == uid or fmode.st_gid != gid:
-                return True
-            elif self.opts.get('permissive_pki_access', False) \
-                    and fmode.st_gid in groups:
-                return True
-        else:
-            if stat.S_IWOTH & fmode.st_mode:
-                # don't allow others to write to the file
+        if stat.S_IWOTH & fmode.st_mode:
+            # don't allow others to write to the file
+            return False
+
+        if stat.S_IWGRP & fmode.st_mode:
+            # if the group has write access only allow with permissive_pki_access
+            if not self.opts.get('permissive_pki_access', False):
+                return False
+            elif os.getuid() == 0 and fmode.st_gid not in groups:
+                # if salt is root it has to be in the group that has write access
+                # this gives the group 'permission' to have write access
                 return False
 
-            # check group flags
-            if self.opts.get('permissive_pki_access', False) and stat.S_IWGRP & fmode.st_mode:
-                return True
-            elif stat.S_IWGRP & fmode.st_mode:
-                return False
-
-            # check if writable by group or other
-            if not (stat.S_IWGRP & fmode.st_mode or
-                    stat.S_IWOTH & fmode.st_mode):
-                return True
-
-        return False
+        return True
 
     def check_signing_file(self, keyid, signing_file):
         '''
@@ -356,7 +335,7 @@ class AutoKey(object):
         expire_minutes = self.opts.get('autosign_timeout', 120)
         if expire_minutes > 0:
             min_time = time.time() - (60 * int(expire_minutes))
-            for root, dirs, filenames in os.walk(autosign_dir):
+            for root, dirs, filenames in salt.utils.path.os_walk(autosign_dir):
                 for f in filenames:
                     stub_file = os.path.join(autosign_dir, f)
                     mtime = os.path.getmtime(stub_file)
@@ -370,6 +349,33 @@ class AutoKey(object):
         os.remove(stub_file)
         return True
 
+    def check_autosign_grains(self, autosign_grains):
+        '''
+        Check for matching grains in the autosign_grains_dir.
+        '''
+        if not autosign_grains or u'autosign_grains_dir' not in self.opts:
+            return False
+
+        autosign_grains_dir = self.opts[u'autosign_grains_dir']
+        for root, dirs, filenames in os.walk(autosign_grains_dir):
+            for grain in filenames:
+                if grain in autosign_grains:
+                    grain_file = os.path.join(autosign_grains_dir, grain)
+
+                    if not self.check_permissions(grain_file):
+                        message = 'Wrong permissions for {0}, ignoring content'
+                        log.warning(message.format(grain_file))
+                        continue
+
+                    with salt.utils.files.fopen(grain_file, u'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith(u'#'):
+                                continue
+                            if autosign_grains[grain] == line:
+                                return True
+        return False
+
     def check_autoreject(self, keyid):
         '''
         Checks if the specified keyid should automatically be rejected.
@@ -379,7 +385,7 @@ class AutoKey(object):
             self.opts.get('autoreject_file', None)
         )
 
-    def check_autosign(self, keyid):
+    def check_autosign(self, keyid, autosign_grains=None):
         '''
         Checks if the specified keyid should automatically be signed.
         '''
@@ -388,6 +394,8 @@ class AutoKey(object):
         if self.check_signing_file(keyid, self.opts.get('autosign_file', None)):
             return True
         if self.check_autosign_dir(keyid):
+            return True
+        if self.check_autosign_grains(autosign_grains):
             return True
         return False
 
@@ -493,6 +501,8 @@ class RemoteFuncs(object):
         mopts['state_auto_order'] = self.opts['state_auto_order']
         mopts['state_events'] = self.opts['state_events']
         mopts['state_aggregate'] = self.opts['state_aggregate']
+        mopts['jinja_env'] = self.opts['jinja_env']
+        mopts['jinja_sls_env'] = self.opts['jinja_sls_env']
         mopts['jinja_lstrip_blocks'] = self.opts['jinja_lstrip_blocks']
         mopts['jinja_trim_blocks'] = self.opts['jinja_trim_blocks']
         return mopts
@@ -553,7 +563,18 @@ class RemoteFuncs(object):
         ret = {}
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return ret
-        match_type = load.get('tgt_type', 'glob')
+        expr_form = load.get('expr_form')
+        if expr_form is not None and 'tgt_type' not in load:
+            salt.utils.versions.warn_until(
+                u'Neon',
+                u'_mine_get: minion {0} uses pre-Nitrogen API key '
+                u'"expr_form". Accepting for backwards compatibility '
+                u'but this is not guaranteed '
+                u'after the Neon release'.format(load['id'])
+            )
+            match_type = expr_form
+        else:
+            match_type = load.get('tgt_type', 'glob')
         if match_type.lower() == 'pillar':
             match_type = 'pillar_exact'
         if match_type.lower() == 'compound':

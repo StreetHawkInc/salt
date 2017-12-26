@@ -803,9 +803,31 @@ class TestDaemon(object):
 
         # Set up config options that require internal data
         master_opts['pillar_roots'] = syndic_master_opts['pillar_roots'] = {
-            'base': [os.path.join(FILES, 'pillar', 'base')]
+            'base': [
+                RUNTIME_VARS.TMP_PILLAR_TREE,
+                os.path.join(FILES, 'pillar', 'base'),
+            ]
+        }
+        minion_opts['pillar_roots'] = {
+            'base': [
+                RUNTIME_VARS.TMP_PILLAR_TREE,
+                os.path.join(FILES, 'pillar', 'base'),
+            ]
         }
         master_opts['file_roots'] = syndic_master_opts['file_roots'] = {
+            'base': [
+                os.path.join(FILES, 'file', 'base'),
+                # Let's support runtime created files that can be used like:
+                #   salt://my-temp-file.txt
+                RUNTIME_VARS.TMP_STATE_TREE
+            ],
+            # Alternate root to test __env__ choices
+            'prod': [
+                os.path.join(FILES, 'file', 'prod'),
+                RUNTIME_VARS.TMP_PRODENV_STATE_TREE
+            ]
+        }
+        minion_opts['file_roots'] = {
             'base': [
                 os.path.join(FILES, 'file', 'base'),
                 # Let's support runtime created files that can be used like:
@@ -835,6 +857,8 @@ class TestDaemon(object):
                 opts_dict['ext_pillar'].append(
                     {'cmd_yaml': 'cat {0}'.format(os.path.join(FILES, 'ext.yaml'))})
 
+        # all read, only owner write
+        autosign_file_permissions = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH | stat.S_IWUSR
         for opts_dict in (master_opts, syndic_master_opts):
             # We need to copy the extension modules into the new master root_dir or
             # it will be prefixed by it
@@ -847,6 +871,14 @@ class TestDaemon(object):
                     new_extension_modules_path
                 )
             opts_dict['extension_modules'] = os.path.join(opts_dict['root_dir'], 'extension_modules')
+
+            # Copy the autosign_file to the new  master root_dir
+            new_autosign_file_path = os.path.join(opts_dict['root_dir'], 'autosign_file')
+            shutil.copyfile(
+                os.path.join(INTEGRATION_TEST_DIR, 'files', 'autosign_file'),
+                new_autosign_file_path
+            )
+            os.chmod(new_autosign_file_path, autosign_file_permissions)
 
         # Point the config values to the correct temporary paths
         for name in ('hosts', 'aliases'):
@@ -979,10 +1011,13 @@ class TestDaemon(object):
                     sub_minion_opts['sock_dir'],
                     minion_opts['sock_dir'],
                     RUNTIME_VARS.TMP_STATE_TREE,
+                    RUNTIME_VARS.TMP_PILLAR_TREE,
                     RUNTIME_VARS.TMP_PRODENV_STATE_TREE,
                     TMP,
                     ],
-                   RUNTIME_VARS.RUNNING_TESTS_USER)
+                   RUNTIME_VARS.RUNNING_TESTS_USER,
+                   root_dir=master_opts['root_dir'],
+                   )
 
         cls.master_opts = master_opts
         cls.minion_opts = minion_opts
@@ -1090,7 +1125,8 @@ class TestDaemon(object):
             os.chmod(path, stat.S_IRWXU)
             func(path)
 
-        for dirname in (TMP, RUNTIME_VARS.TMP_STATE_TREE, RUNTIME_VARS.TMP_PRODENV_STATE_TREE):
+        for dirname in (TMP, RUNTIME_VARS.TMP_STATE_TREE,
+                        RUNTIME_VARS.TMP_PILLAR_TREE, RUNTIME_VARS.TMP_PRODENV_STATE_TREE):
             if os.path.isdir(dirname):
                 shutil.rmtree(dirname, onerror=remove_readonly)
 

@@ -120,7 +120,7 @@ def _get_zone_etc_localtime():
             hash_type = __opts__.get('hash_type', 'md5')
             tzfile_hash = salt.utils.hashutils.get_hash(tzfile, hash_type)
             # Not a link, just a copy of the tzdata file
-            for root, dirs, files in os.walk(tzdir):
+            for root, dirs, files in salt.utils.path.os_walk(tzdir):
                 for filename in files:
                     full_path = os.path.join(root, filename)
                     olson_name = full_path[tzdir_len:]
@@ -339,6 +339,10 @@ def zone_compare(timezone):
     '''
     if 'Solaris' in __grains__['os_family'] or 'AIX' in __grains__['os_family']:
         return timezone == get_zone()
+
+    if 'FreeBSD' in __grains__['os_family']:
+        if not os.path.isfile(_get_etc_localtime_path()):
+            return timezone == get_zone()
 
     tzfile = _get_etc_localtime_path()
     zonepath = _get_zone_file(timezone)

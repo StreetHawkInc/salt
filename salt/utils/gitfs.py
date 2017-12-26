@@ -537,7 +537,7 @@ class GitProvider(object):
             return root_dir
         log.error(
             'Root path \'%s\' not present in %s remote \'%s\', '
-            'skipping.', self.root, self.role, self.id
+            'skipping.', self.root(), self.role, self.id
         )
         return None
 
@@ -910,7 +910,7 @@ class GitProvider(object):
         '''
         if self.branch == '__env__':
             target = self.opts.get('pillarenv') \
-                or self.opts.get('environment') \
+                or self.opts.get('saltenv') \
                 or 'base'
             return self.opts['{0}_base'.format(self.role)] \
                 if target == 'base' \
