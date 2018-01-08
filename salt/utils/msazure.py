@@ -185,18 +185,5 @@ def object_to_dict(obj):
     elif isinstance(obj, six.string_types):
         ret = obj
     else:
-        ret = {}
-        for item in obj.__dict__:
-            if item.startswith('_'):
-                continue
-            # This is ugly, but inspect.isclass() doesn't seem to work
-            try:
-                if inspect.isclass(obj) or 'class' in str(type(obj.__dict__.get(item))):
-                    ret[item] = object_to_dict(obj.__dict__[item])
-                elif isinstance(obj.__dict__[item], six.text_type):
-                    ret[item] = obj.__dict__[item].encode('ascii', 'replace')
-                else:
-                    ret[item] = obj.__dict__[item]
-            except AttributeError:
-                ret[item] = obj.get(item)
+        ret = obj.as_dict()
     return ret

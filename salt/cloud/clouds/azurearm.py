@@ -478,7 +478,11 @@ def __get_ips_from_node(resource_group, node):
     private_ips = []
     public_ips = []
     for node_iface in node.network_profile.network_interfaces:
-        node_iface_name = node_iface.id.split('/')[-1]
+        node_iface_name = getattr(
+            node_iface,
+            'id',
+            getattr(node_iface, 'get', lambda x: '')('id')
+        ).split('/')[-1]
         network_interface = netconn.network_interfaces.get(resource_group, node_iface_name)
         for ip_configuration in network_interface.ip_configurations:
             if ip_configuration.private_ip_address:
@@ -1170,7 +1174,9 @@ def request_instance(call=None, kwargs=None):  # pylint: disable=unused-argument
         plan=None,
         hardware_profile=HardwareProfile(
             vm_size=getattr(
-                VirtualMachineSizeTypes, vm_['size'].lower()
+                VirtualMachineSizeTypes,
+                vm_['size'].lower(),
+                vm_['size'].lower(),
             ),
         ),
         storage_profile=StorageProfile(
