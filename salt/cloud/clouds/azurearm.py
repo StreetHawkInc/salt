@@ -98,6 +98,7 @@ import os.path
 import pprint
 import string
 import time
+import copy
 
 # Salt libs
 import salt.cache
