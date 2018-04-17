@@ -21,6 +21,7 @@ import errno
 import salt.crypt
 import salt.utils.async
 import salt.utils.event
+import salt.utils.files
 import salt.utils.platform
 import salt.utils.process
 import salt.utils.verify
@@ -52,9 +53,14 @@ else:
 
 # Import third party libs
 try:
-    from Cryptodome.Cipher import PKCS1_OAEP
+    from M2Crypto import RSA
+    HAS_M2 = True
 except ImportError:
-    from Crypto.Cipher import PKCS1_OAEP
+    HAS_M2 = False
+    try:
+        from Cryptodome.Cipher import PKCS1_OAEP
+    except ImportError:
+        from Crypto.Cipher import PKCS1_OAEP
 
 if six.PY3 and salt.utils.platform.is_windows():
     USE_LOAD_BALANCER = True
@@ -139,8 +145,8 @@ if USE_LOAD_BALANCER:
         # Based on default used in tornado.netutil.bind_sockets()
         backlog = 128
 
-        def __init__(self, opts, socket_queue, log_queue=None):
-            super(LoadBalancerServer, self).__init__(log_queue=log_queue)
+        def __init__(self, opts, socket_queue, **kwargs):
+            super(LoadBalancerServer, self).__init__(**kwargs)
             self.opts = opts
             self.socket_queue = socket_queue
             self._socket = None
@@ -154,13 +160,17 @@ if USE_LOAD_BALANCER:
             self.__init__(
                 state['opts'],
                 state['socket_queue'],
-                log_queue=state['log_queue']
+                log_queue=state['log_queue'],
+                log_queue_level=state['log_queue_level']
             )
 
         def __getstate__(self):
-            return {'opts': self.opts,
-                    'socket_queue': self.socket_queue,
-                    'log_queue': self.log_queue}
+            return {
+                'opts': self.opts,
+                'socket_queue': self.socket_queue,
+                'log_queue': self.log_queue,
+                'log_queue_level': self.log_queue_level
+            }
 
         def close(self):
             if self._socket is not None:
@@ -296,8 +306,11 @@ class AsyncTCPReqChannel(salt.transport.client.ReqChannel):
             yield self.auth.authenticate()
         ret = yield self.message_client.send(self._package_load(self.auth.crypticle.dumps(load)), timeout=timeout)
         key = self.auth.get_keys()
-        cipher = PKCS1_OAEP.new(key)
-        aes = cipher.decrypt(ret['key'])
+        if HAS_M2:
+            aes = key.private_decrypt(ret['key'], RSA.pkcs1_oaep_padding)
+        else:
+            cipher = PKCS1_OAEP.new(key)
+            aes = cipher.decrypt(ret['key'])
         pcrypt = salt.crypt.Crypticle(self.opts, aes)
         data = pcrypt.loads(ret[dictkey])
         if six.PY3:
@@ -492,7 +505,7 @@ class AsyncTCPPubChannel(salt.transport.mixins.auth.AESPubClientMixin, salt.tran
     def connect(self):
         try:
             self.auth = salt.crypt.AsyncAuth(self.opts, io_loop=self.io_loop)
-            self.tok = self.auth.gen_token('salt')
+            self.tok = self.auth.gen_token(b'salt')
             if not self.auth.authenticated:
                 yield self.auth.authenticate()
             if self.auth.authenticated:
@@ -1193,7 +1206,7 @@ class PubServer(tornado.tcpserver.TCPServer, object):
             clients = self.present[id_]
             clients.add(client)
         else:
-            self.present[id_] = set([client])
+            self.present[id_] = {client}
             if self.presence_events:
                 data = {'new': [id_],
                         'lost': []}
@@ -1328,6 +1341,7 @@ class TCPPubServerChannel(salt.transport.server.PubServerChannel):
     def __init__(self, opts):
         self.opts = opts
         self.serial = salt.payload.Serial(self.opts)  # TODO: in init?
+        self.ckminions = salt.utils.minions.CkMinions(opts)
         self.io_loop = None
 
     def __setstate__(self, state):
@@ -1338,14 +1352,18 @@ class TCPPubServerChannel(salt.transport.server.PubServerChannel):
         return {'opts': self.opts,
                 'secrets': salt.master.SMaster.secrets}
 
-    def _publish_daemon(self, log_queue=None):
+    def _publish_daemon(self, **kwargs):
         '''
         Bind to the interface specified in the configuration file
         '''
         salt.utils.process.appendproctitle(self.__class__.__name__)
 
+        log_queue = kwargs.get('log_queue')
         if log_queue is not None:
             salt.log.setup.set_multiprocessing_logging_queue(log_queue)
+        log_queue_level = kwargs.get('log_queue_level')
+        if log_queue_level is not None:
+            salt.log.setup.set_multiprocessing_logging_level(log_queue_level)
         salt.log.setup.setup_multiprocessing_logging(log_queue)
 
         # Check if io_loop was set outside
@@ -1377,11 +1395,8 @@ class TCPPubServerChannel(salt.transport.server.PubServerChannel):
 
         # Securely create socket
         log.info('Starting the Salt Puller on %s', pull_uri)
-        old_umask = os.umask(0o177)
-        try:
+        with salt.utils.files.set_umask(0o177):
             pull_sock.start()
-        finally:
-            os.umask(old_umask)
 
         # run forever
         try:
@@ -1399,6 +1414,9 @@ class TCPPubServerChannel(salt.transport.server.PubServerChannel):
         if salt.utils.platform.is_windows():
             kwargs['log_queue'] = (
                 salt.log.setup.get_multiprocessing_logging_queue()
+            )
+            kwargs['log_queue_level'] = (
+                salt.log.setup.get_multiprocessing_logging_level()
             )
 
         process_manager.add_process(self._publish_daemon, kwargs=kwargs)
@@ -1432,6 +1450,16 @@ class TCPPubServerChannel(salt.transport.server.PubServerChannel):
 
         # add some targeting stuff for lists only (for now)
         if load['tgt_type'] == 'list':
-            int_payload['topic_lst'] = load['tgt']
+            if isinstance(load['tgt'], six.string_types):
+                # Fetch a list of minions that match
+                _res = self.ckminions.check_minions(load['tgt'],
+                                                    tgt_type=load['tgt_type'])
+                match_ids = _res['minions']
+
+                log.debug("Publish Side Match: %s", match_ids)
+                # Send list of miions thru so zmq can target them
+                int_payload['topic_lst'] = match_ids
+            else:
+                int_payload['topic_lst'] = load['tgt']
         # Send it over IPC!
         pub_sock.send(int_payload)

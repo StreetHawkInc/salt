@@ -206,7 +206,7 @@ if ( ! [bool]$Env:SALT_PIP_LOCAL_CACHE) {
         Start_Process_and_test_exitcode "$($ini['Settings']['Python2Dir'])\python.exe"  "-m pip download --dest $Env:SALT_PIP_LOCAL_CACHE -r $($script_path)\req_pip.txt" "pip download"
     }
     Write-Output "    reading from local pip cache $Env:SALT_PIP_LOCAL_CACHE"
-    Write-Output "    If a (new) ressource is missing, please delete all files in this cache, go online and repeat"
+    Write-Output "    If a (new) resource is missing, please delete all files in this cache, go online and repeat"
   Start_Process_and_test_exitcode "$($ini['Settings']['Python2Dir'])\python.exe" "-m pip install --no-index --find-links=$Env:SALT_PIP_LOCAL_CACHE -r $($script_path)\req_pip.txt" "pip install"
 }
 
@@ -226,28 +226,22 @@ if ( ! [bool]$Env:SALT_REQ_LOCAL_CACHE) {
         Start_Process_and_test_exitcode "$($ini['Settings']['Python2Dir'])\python.exe"  "-m pip download --dest $Env:SALT_REQ_LOCAL_CACHE -r $($script_path)\req.txt" "pip download"
     }
     Write-Output "    reading from local pip cache $Env:SALT_REQ_LOCAL_CACHE"
-    Write-Output "    If a (new) ressource is missing, please delete all files in this cache, go online and repeat"
+    Write-Output "    If a (new) resource is missing, please delete all files in this cache, go online and repeat"
   Start_Process_and_test_exitcode "$($ini['Settings']['Python2Dir'])\python.exe" "-m pip install --no-index --find-links=$Env:SALT_REQ_LOCAL_CACHE -r $($script_path)\req.txt" "pip install"
 }
 
 #==============================================================================
-# Install PyWin32 from wheel file
+# Cleaning Up PyWin32
 #==============================================================================
 Write-Output " ----------------------------------------------------------------"
-Write-Output " - $script_name :: Installing PyWin32 . . ."
+Write-Output " - $script_name :: Cleaning Up PyWin32 . . ."
 Write-Output " ----------------------------------------------------------------"
-# Download
-$file = "$($ini[$bitPrograms]['PyWin322'])"
-$url  = "$($ini['Settings']['SaltRepo'])/$bitFolder/$file"
-$file = "$($ini['Settings']['DownloadDir'])\$bitFolder\$file"
-DownloadFileWithProgress $url $file
-
-# Install
-Start_Process_and_test_exitcode "$($ini['Settings']['Scripts2Dir'])\pip.exe" "install $file " "pip install PyWin32"
 
 # Move DLL's to Python Root
 Write-Output " - $script_name :: Moving PyWin32 DLLs . . ."
-Move-Item "$($ini['Settings']['SitePkgs2Dir'])\pywin32_system32\*.dll" "$($ini['Settings']['Python2Dir'])" -Force
+# The dlls have to be in Python directory and the site-packages\win32 directory
+Copy-Item "$($ini['Settings']['SitePkgs2Dir'])\pywin32_system32\*.dll" "$($ini['Settings']['Python2Dir'])" -Force
+Move-Item "$($ini['Settings']['SitePkgs2Dir'])\pywin32_system32\*.dll" "$($ini['Settings']['SitePkgs2Dir'])\win32" -Force
 
 # Create gen_py directory
 Write-Output " - $script_name :: Creating gen_py Directory . . ."

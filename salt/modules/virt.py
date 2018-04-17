@@ -8,7 +8,7 @@ Work with virtual machines managed by libvirt
 # of his in the virt func module have been used
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import copy
 import os
 import re
@@ -244,8 +244,8 @@ def _gen_xml(name,
     context = {
         'hypervisor': hypervisor,
         'name': name,
-        'cpu': str(cpu),
-        'mem': str(mem),
+        'cpu': six.text_type(cpu),
+        'mem': six.text_type(mem),
     }
     if hypervisor in ['qemu', 'kvm']:
         context['controller_model'] = False
@@ -297,7 +297,7 @@ def _gen_xml(name,
                 context['disks'][disk_name]['driver'] = False
             context['disks'][disk_name]['disk_bus'] = args['model']
             context['disks'][disk_name]['type'] = args['format']
-            context['disks'][disk_name]['index'] = str(i)
+            context['disks'][disk_name]['index'] = six.text_type(i)
 
     context['nics'] = nicp
 
@@ -305,7 +305,7 @@ def _gen_xml(name,
     try:
         template = JINJA.get_template(fn_)
     except jinja2.exceptions.TemplateNotFound:
-        log.error('Could not load template {0}'.format(fn_))
+        log.error('Could not load template %s', fn_)
         return ''
 
     return template.render(**context)
@@ -326,14 +326,60 @@ def _gen_vol_xml(vmname,
         'filename': '{0}.{1}'.format(diskname, disk_info['disktype']),
         'volname': diskname,
         'disktype': disk_info['disktype'],
-        'size': str(size),
+        'size': six.text_type(size),
         'pool': disk_info['pool'],
     }
     fn_ = 'libvirt_volume.jinja'
     try:
         template = JINJA.get_template(fn_)
     except jinja2.exceptions.TemplateNotFound:
-        log.error('Could not load template {0}'.format(fn_))
+        log.error('Could not load template %s', fn_)
+        return ''
+    return template.render(**context)
+
+
+def _gen_net_xml(name,
+                 bridge,
+                 forward,
+                 vport,
+                 tag=None):
+    '''
+    Generate the XML string to define a libvirt network
+    '''
+    context = {
+        'name': name,
+        'bridge': bridge,
+        'forward': forward,
+        'vport': vport,
+        'tag': tag,
+    }
+    fn_ = 'libvirt_network.jinja'
+    try:
+        template = JINJA.get_template(fn_)
+    except jinja2.exceptions.TemplateNotFound:
+        log.error('Could not load template %s', fn_)
+        return ''
+    return template.render(**context)
+
+
+def _gen_pool_xml(name,
+                  ptype,
+                  target,
+                  source=None):
+    '''
+    Generate the XML string to define a libvirt storage pool
+    '''
+    context = {
+        'name': name,
+        'ptype': ptype,
+        'target': target,
+        'source': source,
+    }
+    fn_ = 'libvirt_pool.jinja'
+    try:
+        template = JINJA.get_template(fn_)
+    except jinja2.exceptions.TemplateNotFound:
+        log.error('Could not load template %s', fn_)
         return ''
     return template.render(**context)
 
@@ -377,24 +423,22 @@ def _qemu_image_create(vm_name,
 
     img_dir = __salt__['config.option']('virt.images')
     log.debug('Image directory from config option `virt.images`'
-              ' is {0}'.format(img_dir))
+              ' is %s', img_dir)
     img_dest = os.path.join(
         img_dir,
         vm_name,
         disk_file_name
     )
-    log.debug('Image destination will be {0}'.format(img_dest))
+    log.debug('Image destination will be %s', img_dest)
     img_dir = os.path.dirname(img_dest)
-    log.debug('Image destination directory is {0}'
-              .format(img_dir))
+    log.debug('Image destination directory is %s', img_dir)
     try:
         os.makedirs(img_dir)
     except OSError:
         pass
 
     if disk_image:
-        log.debug('Create disk from specified image {0}'
-                  .format(disk_image))
+        log.debug('Create disk from specified image %s', disk_image)
         sfn = __salt__['cp.cache_file'](disk_image, saltenv)
 
         qcow2 = False
@@ -404,23 +448,21 @@ def _qemu_image_create(vm_name,
             qcow2 = imageinfo['file format'] == 'qcow2'
         try:
             if enable_qcow and qcow2:
-                log.info('Cloning qcow2 image {0} using copy on write'
-                         .format(sfn))
+                log.info('Cloning qcow2 image %s using copy on write', sfn)
                 __salt__['cmd.run'](
                     'qemu-img create -f qcow2 -o backing_file={0} {1}'
                     .format(sfn, img_dest).split())
             else:
-                log.debug('Copying {0} to {1}'.format(sfn, img_dest))
+                log.debug('Copying %s to %s', sfn, img_dest)
                 salt.utils.files.copyfile(sfn, img_dest)
 
-            mask = os.umask(0)
-            os.umask(mask)
+            mask = salt.utils.files.get_umask()
 
             if disk_size and qcow2:
-                log.debug('Resize qcow2 image to {0}M'.format(disk_size))
+                log.debug('Resize qcow2 image to %sM', disk_size)
                 __salt__['cmd.run'](
                     'qemu-img resize {0} {1}M'
-                    .format(img_dest, str(disk_size))
+                    .format(img_dest, disk_size)
                 )
 
             log.debug('Apply umask and remove exec bit')
@@ -436,14 +478,13 @@ def _qemu_image_create(vm_name,
     else:
         # Create empty disk
         try:
-            mask = os.umask(0)
-            os.umask(mask)
+            mask = salt.utils.files.get_umask()
 
             if disk_size:
-                log.debug('Create empty image with size {0}M'.format(disk_size))
+                log.debug('Create empty image with size %sM', disk_size)
                 __salt__['cmd.run'](
                     'qemu-img create -f {0} {1} {2}M'
-                    .format(disk_type, img_dest, str(disk_size))
+                    .format(disk_type, img_dest, disk_size)
                 )
             else:
                 raise CommandExecutionError(
@@ -659,7 +700,7 @@ def _nic_profile(profile_name, hypervisor, **kwargs):
     def _assign_mac(attributes, hypervisor):
         dmac = kwargs.get('dmac', None)
         if dmac is not None:
-            log.debug('DMAC address is {0}'.format(dmac))
+            log.debug('DMAC address is %s', dmac)
             if salt.utils.validate.net.mac(dmac):
                 attributes['mac'] = dmac
             else:
@@ -710,10 +751,10 @@ def init(name,
         salt 'hypervisor' virt.init vm_name 4 512 nic=profile disk=profile
     '''
     hypervisor = __salt__['config.get']('libvirt:hypervisor', hypervisor)
-    log.debug('Using hyperisor {0}'.format(hypervisor))
+    log.debug('Using hyperisor %s', hypervisor)
 
     nicp = _nic_profile(nic, hypervisor, **kwargs)
-    log.debug('NIC profile is {0}'.format(nicp))
+    log.debug('NIC profile is %s', nicp)
 
     diskp = _disk_profile(disk, hypervisor, **kwargs)
 
@@ -721,16 +762,13 @@ def init(name,
         # If image is specified in module arguments, then it will be used
         # for the first disk instead of the image from the disk profile
         disk_name = next(six.iterkeys(diskp[0]))
-        log.debug('{0} image from module arguments will be used for disk "{1}"'
-                  ' instead of {2}'
-                  .format(image,
-                          disk_name,
-                          diskp[0][disk_name].get('image', None)))
+        log.debug('%s image from module arguments will be used for disk "%s"'
+                  ' instead of %s', image, disk_name, diskp[0][disk_name].get('image'))
         diskp[0][disk_name]['image'] = image
 
     # Create multiple disks, empty or from specified images.
     for disk in diskp:
-        log.debug("Creating disk for VM [ {0} ]: {1}".format(name, disk))
+        log.debug("Creating disk for VM [ %s ]: %s", name, disk)
 
         for disk_name, args in six.iteritems(disk):
 
@@ -743,7 +781,7 @@ def init(name,
                     )
                 else:
                     # assume libvirt manages disks for us
-                    log.debug('Generating libvirt XML for {0}'.format(disk))
+                    log.debug('Generating libvirt XML for %s', disk)
                     xml = _gen_vol_xml(
                         name,
                         disk_name,
@@ -771,7 +809,7 @@ def init(name,
 
                 # Seed only if there is an image specified
                 if seed and disk_image:
-                    log.debug('Seed command is {0}'.format(seed_cmd))
+                    log.debug('Seed command is %s', seed_cmd)
                     __salt__[seed_cmd](
                         img_dest,
                         id_=name,
@@ -795,14 +833,14 @@ def init(name,
         define_xml_str(xml)
     except libvirtError as err:
         # check if failure is due to this domain already existing
-        if "domain '{}' already exists".format(name) in str(err):
+        if "domain '{}' already exists".format(name) in six.text_type(err):
             # continue on to seeding
             log.warning(err)
         else:
             raise err  # a real error we should report upwards
 
     if start:
-        log.debug('Starting VM {0}'.format(name))
+        log.debug('Starting VM %s', name)
         _get_domain(name).create()
 
     return True
@@ -947,7 +985,7 @@ def node_info():
     raw = conn.getInfo()
     info = {'cpucores': raw[6],
             'cpumhz': raw[3],
-            'cpumodel': str(raw[0]),
+            'cpumodel': six.text_type(raw[0]),
             'cpus': raw[2],
             'cputhreads': raw[7],
             'numanodes': raw[4],
@@ -985,7 +1023,7 @@ def get_nics(vm_):
                     temp = {}
                     for key, value in v_node.attributes.items():
                         temp[key] = value
-                    nic[str(v_node.tagName)] = temp
+                    nic[six.text_type(v_node.tagName)] = temp
                 # virtualport needs to be handled separately, to pick up the
                 # type attribute of the virtualport itself
                 if v_node.tagName == 'virtualport':
@@ -1082,7 +1120,8 @@ def get_disks(vm_):
                         source.getAttribute('name'))
             if qemu_target:
                 disks[target.getAttribute('dev')] = {
-                    'file': qemu_target}
+                    'file': qemu_target,
+                    'type': elem.getAttribute('device')}
     for dev in disks:
         try:
             hypervisor = __salt__['config.get']('libvirt:hypervisor', 'kvm')
@@ -1448,7 +1487,9 @@ def create_xml_path(path):
     '''
     try:
         with salt.utils.files.fopen(path, 'r') as fp_:
-            return create_xml_str(fp_.read())
+            return create_xml_str(
+                salt.utils.stringutils.to_unicode(fp_.read())
+            )
     except (OSError, IOError):
         return False
 
@@ -1480,7 +1521,9 @@ def define_xml_path(path):
     '''
     try:
         with salt.utils.files.fopen(path, 'r') as fp_:
-            return define_xml_str(fp_.read())
+            return define_xml_str(
+                salt.utils.stringutils.to_unicode(fp_.read())
+            )
     except (OSError, IOError):
         return False
 
@@ -1497,7 +1540,7 @@ def define_vol_xml_str(xml):
     '''
     poolname = __salt__['config.get']('libvirt:storagepool', 'default')
     conn = __get_conn()
-    pool = conn.storagePoolLookupByName(str(poolname))
+    pool = conn.storagePoolLookupByName(six.text_type(poolname))
     return pool.createXML(xml, 0) is not None
 
 
@@ -1514,7 +1557,9 @@ def define_vol_xml_path(path):
     '''
     try:
         with salt.utils.files.fopen(path, 'r') as fp_:
-            return define_vol_xml_str(fp_.read())
+            return define_vol_xml_str(
+                salt.utils.stringutils.to_unicode(fp_.read())
+            )
     except (OSError, IOError):
         return False
 
@@ -1652,19 +1697,31 @@ def undefine(vm_):
     return dom.undefine() == 0
 
 
-def purge(vm_, dirs=False):
+def purge(vm_, dirs=False, removables=None):
     '''
     Recursively destroy and delete a virtual machine, pass True for dir's to
     also delete the directories containing the virtual machine disk images -
     USE WITH EXTREME CAUTION!
 
+    Pass removables=False to avoid deleting cdrom and floppy images. To avoid
+    disruption, the default but dangerous value is True. This will be changed
+    to the safer False default value in Sodium.
+
     CLI Example:
 
     .. code-block:: bash
 
-        salt '*' virt.purge <domain>
+        salt '*' virt.purge <domain> removables=False
     '''
     disks = get_disks(vm_)
+    if removables is None:
+        salt.utils.versions.warn_until(
+            'Sodium',
+            'removables argument default value is True, but will be changed '
+            'to False by default in {version}. Please set to True to maintain '
+            'the current behavior in the future.'
+        )
+        removables = True
     try:
         if not stop(vm_):
             return False
@@ -1673,6 +1730,8 @@ def purge(vm_, dirs=False):
         pass
     directories = set()
     for disk in disks:
+        if not removables and disks[disk]['type'] in ['cdrom', 'floppy']:
+            continue
         os.remove(disks[disk]['file'])
         directories.add(os.path.dirname(disks[disk]['file']))
     if dirs:
@@ -1707,7 +1766,7 @@ def is_kvm_hyper():
     '''
     try:
         with salt.utils.files.fopen('/proc/modules') as fp_:
-            if 'kvm_' not in fp_.read():
+            if 'kvm_' not in salt.utils.stringutils.to_unicode(fp_.read()):
                 return False
     except IOError:
         # No /proc/modules? Are we on Windows? Or Solaris?
@@ -1733,7 +1792,7 @@ def is_xen_hyper():
         return False
     try:
         with salt.utils.files.fopen('/proc/modules') as fp_:
-            if 'xen_' not in fp_.read():
+            if 'xen_' not in salt.utils.stringutils.to_unicode(fp_.read()):
                 return False
     except (OSError, IOError):
         # No /proc/modules? Are we on Windows? Or Solaris?
@@ -2145,7 +2204,7 @@ def cpu_baseline(full=False, migratable=False, out='libvirt'):
 
     cpu = caps.getElementsByTagName('host')[0].getElementsByTagName('cpu')[0]
 
-    log.debug('Host CPU model definition: {0}'.format(cpu.toxml()))
+    log.debug('Host CPU model definition: %s', cpu.toxml())
 
     flags = 0
     if migratable:
@@ -2197,3 +2256,130 @@ def cpu_baseline(full=False, migratable=False, out='libvirt'):
             'vendor': cpu.getElementsByTagName('vendor')[0].childNodes[0].nodeValue,
             'features': [feature.getAttribute('name') for feature in cpu.getElementsByTagName('feature')]
         }
+
+
+def net_define(name, bridge, forward, **kwargs):
+    '''
+    Create libvirt network.
+
+    :param name: Network name
+    :param bridge: Bridge name
+    :param forward: Forward mode(bridge, router, nat)
+    :param vport: Virtualport type
+    :param tag: Vlan tag
+    :param autostart: Network autostart (default True)
+    :param start: Network start (default True)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' virt.net_define network main bridge openvswitch
+    '''
+    conn = __get_conn()
+    vport = kwargs.get('vport', None)
+    tag = kwargs.get('tag', None)
+    autostart = kwargs.get('autostart', True)
+    starting = kwargs.get('start', True)
+    xml = _gen_net_xml(
+        name,
+        bridge,
+        forward,
+        vport,
+        tag,
+    )
+    try:
+        conn.networkDefineXML(xml)
+    except libvirtError as err:
+        log.warning(err)
+        raise err  # a real error we should report upwards
+
+    try:
+        network = conn.networkLookupByName(name)
+    except libvirtError as err:
+        log.warning(err)
+        raise err  # a real error we should report upwards
+
+    if network is None:
+        return False
+
+    if (starting is True or autostart is True) and network.isActive() != 1:
+        network.create()
+
+    if autostart is True and network.autostart() != 1:
+        network.setAutostart(int(autostart))
+    elif autostart is False and network.autostart() == 1:
+        network.setAutostart(int(autostart))
+
+    return True
+
+
+def pool_define_build(name, **kwargs):
+    '''
+    Create libvirt pool.
+
+    :param name: Pool name
+    :param ptype: Pool type
+    :param target: Pool path target
+    :param source: Pool dev source
+    :param autostart: Pool autostart (default True)
+    :param start: Pool start (default True)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' virt.pool_defin base logical base
+    '''
+    exist = False
+    update = False
+    conn = __get_conn()
+    ptype = kwargs.pop('ptype', None)
+    target = kwargs.pop('target', None)
+    source = kwargs.pop('source', None)
+    autostart = kwargs.pop('autostart', True)
+    starting = kwargs.pop('start', True)
+    xml = _gen_pool_xml(
+        name,
+        ptype,
+        target,
+        source,
+    )
+    try:
+        conn.storagePoolDefineXML(xml)
+    except libvirtError as err:
+        log.warning(err)
+        if err.get_error_code() == libvirt.VIR_ERR_STORAGE_POOL_BUILT or libvirt.VIR_ERR_OPERATION_FAILED:
+            exist = True
+        else:
+            raise err  # a real error we should report upwards
+    try:
+        pool = conn.storagePoolLookupByName(name)
+    except libvirtError as err:
+        log.warning(err)
+        raise err  # a real error we should report upwards
+
+    if pool is None:
+        return False
+
+    if (starting is True or autostart is True) and pool.isActive() != 1:
+        if exist is True:
+            update = True
+            pool.create()
+        else:
+            pool.create(libvirt.VIR_STORAGE_POOL_CREATE_WITH_BUILD)
+
+    if autostart is True and pool.autostart() != 1:
+        if exist is True:
+            update = True
+        pool.setAutostart(int(autostart))
+    elif autostart is False and pool.autostart() == 1:
+        if exist is True:
+            update = True
+        pool.setAutostart(int(autostart))
+    if exist is True:
+        if update is True:
+            return (True, 'Pool exist', 'Pool update')
+        return (True, 'Pool exist')
+
+    return True

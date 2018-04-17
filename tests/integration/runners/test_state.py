@@ -18,6 +18,7 @@ from salt.ext.six.moves import queue
 from tests.support.case import ShellCase
 from tests.support.unit import skipIf
 from tests.support.paths import TMP
+from tests.support.helpers import flaky
 
 # Import Salt Libs
 import salt.utils.platform
@@ -44,6 +45,7 @@ class StateRunnerTest(ShellCase):
         q.put(ret)
         q.task_done()
 
+    @flaky
     def test_orchestrate_output(self):
         '''
         Ensure the orchestrate runner outputs useful state data.
@@ -169,7 +171,7 @@ class StateRunnerTest(ShellCase):
         '''
         self.run_run('saltutil.sync_runners')
         self.run_run('saltutil.sync_wheel')
-        ret = '\n'.join(self.run_run('state.orchestrate orch.retcode'))
+        ret = '\n'.join(self.run_run('state.orchestrate orch.retcode', timeout=120))
 
         for result in ('          ID: test_runner_success\n'
                        '    Function: salt.runner\n'
@@ -194,7 +196,7 @@ class StateRunnerTest(ShellCase):
 
     def test_orchestrate_target_doesnt_exists(self):
         '''
-        test orchestration when target doesnt exist
+        test orchestration when target doesn't exist
         while using multiple states
         '''
         ret = self.run_run('state.orchestrate orch.target-doesnt-exists')
@@ -237,6 +239,19 @@ class StateRunnerTest(ShellCase):
         self.assertIn(expect, six.text_type(out))
 
         server_thread.join()
+
+    def test_orchestrate_subset(self):
+        '''
+        test orchestration state using subset
+        '''
+        ret = self.run_run('state.orchestrate orch.subset')
+
+        def count(thing, listobj):
+            return sum([obj.strip() == thing for obj in listobj])
+
+        self.assertEqual(count('ID: test subset', ret), 1)
+        self.assertEqual(count('Succeeded: 1', ret), 1)
+        self.assertEqual(count('Failed:    0', ret), 1)
 
 
 @skipIf(salt.utils.platform.is_windows(), '*NIX-only test')

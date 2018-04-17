@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 '''
-The module used to execute states in salt. A state is unlike a module
-execution in that instead of just executing a command it ensure that a
-certain state is present on the system.
+The State Compiler is used to execute states in Salt. A state is unlike
+an execution module in that instead of just executing a command, it
+ensures that a certain state is present on the system.
 
 The data sent to the state calls is as follows:
     { 'state': '<state module name>',
@@ -33,6 +33,7 @@ import salt.pillar
 import salt.fileclient
 import salt.utils.args
 import salt.utils.crypt
+import salt.utils.decorators.state
 import salt.utils.dictupdate
 import salt.utils.event
 import salt.utils.files
@@ -43,7 +44,6 @@ import salt.utils.url
 import salt.syspaths as syspaths
 from salt.template import compile_template, compile_template_str
 from salt.exceptions import (
-    SaltException,
     SaltRenderError,
     SaltReqTimeoutError
 )
@@ -165,6 +165,23 @@ def _l_tag(name, id_):
            'state': 'Listen_Error',
            'fun': 'Listen_Error'}
     return _gen_tag(low)
+
+
+def _calculate_fake_duration():
+    '''
+    Generate a NULL duration for when states do not run
+    but we want the results to be consistent.
+    '''
+    utc_start_time = datetime.datetime.utcnow()
+    local_start_time = utc_start_time - \
+        (datetime.datetime.utcnow() - datetime.datetime.now())
+    utc_finish_time = datetime.datetime.utcnow()
+    start_time = local_start_time.time().isoformat()
+    delta = (utc_finish_time - utc_start_time)
+    # duration in milliseconds.microseconds
+    duration = (delta.seconds * 1000000 + delta.microseconds)/1000.0
+
+    return start_time, duration
 
 
 def get_accumulator_dir(cachedir):
@@ -703,8 +720,12 @@ class State(object):
             except AttributeError:
                 pillar_enc = six.text_type(pillar_enc).lower()
         self._pillar_enc = pillar_enc
-        if initial_pillar:
+        if initial_pillar and not self._pillar_override:
             self.opts['pillar'] = initial_pillar
+        else:
+            # Compile pillar data
+            self.opts['pillar'] = self._gather_pillar()
+            # Reapply overrides on top of compiled pillar
             if self._pillar_override:
                 self.opts['pillar'] = salt.utils.dictupdate.merge(
                     self.opts['pillar'],
@@ -712,8 +733,6 @@ class State(object):
                     self.opts.get('pillar_source_merging_strategy', 'smart'),
                     self.opts.get('renderer', 'yaml'),
                     self.opts.get('pillar_merge_lists', False))
-        else:
-            self.opts['pillar'] = self._gather_pillar()
         self.state_con = context or {}
         self.load_modules()
         self.active = set()
@@ -812,51 +831,80 @@ class State(object):
         '''
         Check that unless doesn't return 0, and that onlyif returns a 0.
         '''
-        ret = {'result': False}
+        ret = {'result': False, 'comment': []}
         cmd_opts = {}
 
         if 'shell' in self.opts['grains']:
             cmd_opts['shell'] = self.opts['grains'].get('shell')
+
         if 'onlyif' in low_data:
-            if not isinstance(low_data['onlyif'], list):
-                low_data_onlyif = [low_data['onlyif']]
-            else:
-                low_data_onlyif = low_data['onlyif']
-            for entry in low_data_onlyif:
-                if not isinstance(entry, six.string_types):
-                    ret.update({'comment': 'onlyif execution failed, bad type passed', 'result': False})
-                    return ret
-                cmd = self.functions['cmd.retcode'](
-                    entry, ignore_retcode=True, python_shell=True, **cmd_opts)
-                log.debug('Last command return code: %s', cmd)
-                if cmd != 0 and ret['result'] is False:
-                    ret.update({'comment': 'onlyif condition is false',
-                                'skip_watch': True,
-                                'result': True})
-                    return ret
-                elif cmd == 0:
-                    ret.update({'comment': 'onlyif condition is true', 'result': False})
-            return ret
+            _ret = self._run_check_onlyif(low_data, cmd_opts)
+            ret['result'] = _ret['result']
+            ret['comment'].append(_ret['comment'])
+            if 'skip_watch' in _ret:
+                ret['skip_watch'] = _ret['skip_watch']
 
         if 'unless' in low_data:
-            if not isinstance(low_data['unless'], list):
-                low_data_unless = [low_data['unless']]
-            else:
-                low_data_unless = low_data['unless']
-            for entry in low_data_unless:
-                if not isinstance(entry, six.string_types):
-                    ret.update({'comment': 'unless condition is false, bad type passed', 'result': False})
-                    return ret
-                cmd = self.functions['cmd.retcode'](
-                    entry, ignore_retcode=True, python_shell=True, **cmd_opts)
-                log.debug('Last command return code: %s', cmd)
-                if cmd == 0 and ret['result'] is False:
-                    ret.update({'comment': 'unless condition is true',
-                                'skip_watch': True,
-                                'result': True})
-                elif cmd != 0:
-                    ret.update({'comment': 'unless condition is false', 'result': False})
-                    return ret
+            _ret = self._run_check_unless(low_data, cmd_opts)
+            # If either result is True, the returned result should be True
+            ret['result'] = _ret['result'] or ret['result']
+            ret['comment'].append(_ret['comment'])
+            if 'skip_watch' in _ret:
+                # If either result is True, the returned result should be True
+                ret['skip_watch'] = _ret['skip_watch'] or ret['skip_watch']
+
+        return ret
+
+    def _run_check_onlyif(self, low_data, cmd_opts):
+        '''
+        Check that unless doesn't return 0, and that onlyif returns a 0.
+        '''
+        ret = {'result': False}
+
+        if not isinstance(low_data['onlyif'], list):
+            low_data_onlyif = [low_data['onlyif']]
+        else:
+            low_data_onlyif = low_data['onlyif']
+        for entry in low_data_onlyif:
+            if not isinstance(entry, six.string_types):
+                ret.update({'comment': 'onlyif execution failed, bad type passed', 'result': False})
+                return ret
+            cmd = self.functions['cmd.retcode'](
+                entry, ignore_retcode=True, python_shell=True, **cmd_opts)
+            log.debug('Last command return code: %s', cmd)
+            if cmd != 0 and ret['result'] is False:
+                ret.update({'comment': 'onlyif condition is false',
+                            'skip_watch': True,
+                            'result': True})
+                return ret
+            elif cmd == 0:
+                ret.update({'comment': 'onlyif condition is true', 'result': False})
+        return ret
+
+    def _run_check_unless(self, low_data, cmd_opts):
+        '''
+        Check that unless doesn't return 0, and that onlyif returns a 0.
+        '''
+        ret = {'result': False}
+
+        if not isinstance(low_data['unless'], list):
+            low_data_unless = [low_data['unless']]
+        else:
+            low_data_unless = low_data['unless']
+        for entry in low_data_unless:
+            if not isinstance(entry, six.string_types):
+                ret.update({'comment': 'unless condition is false, bad type passed', 'result': False})
+                return ret
+            cmd = self.functions['cmd.retcode'](
+                entry, ignore_retcode=True, python_shell=True, **cmd_opts)
+            log.debug('Last command return code: %s', cmd)
+            if cmd == 0 and ret['result'] is False:
+                ret.update({'comment': 'unless condition is true',
+                            'skip_watch': True,
+                            'result': True})
+            elif cmd != 0:
+                ret.update({'comment': 'unless condition is false', 'result': False})
+                return ret
 
         # No reason to stop, return ret
         return ret
@@ -990,66 +1038,6 @@ class State(object):
                     self.module_refresh()
         elif data['state'] in ('pkg', 'ports'):
             self.module_refresh()
-
-    @staticmethod
-    def verify_ret(ret):
-        '''
-        Perform basic verification of the raw state return data
-        '''
-        if not isinstance(ret, dict):
-            raise SaltException(
-                'Malformed state return, return must be a dict'
-            )
-        bad = []
-        for val in ['name', 'result', 'changes', 'comment']:
-            if val not in ret:
-                bad.append(val)
-        if bad:
-            m = 'The following keys were not present in the state return: {0}'
-            raise SaltException(m.format(','.join(bad)))
-
-    @staticmethod
-    def munge_ret_for_export(ret):
-        '''
-        Process raw state return data to make it suitable for export,
-        to ensure consistency of the data format seen by external systems
-        '''
-        # We support lists of strings for ret['comment'] internal
-        # to the state system for improved ergonomics.
-        # However, to maintain backwards compatability with external tools,
-        # the list representation is not allowed to leave the state system,
-        # and should be converted like this at external boundaries.
-        if isinstance(ret['comment'], list):
-            ret['comment'] = '\n'.join(ret['comment'])
-
-    @staticmethod
-    def verify_ret_for_export(ret):
-        '''
-        Verify the state return data for export outside the state system
-        '''
-        State.verify_ret(ret)
-
-        for key in ['name', 'comment']:
-            if not isinstance(ret[key], six.string_types):
-                msg = (
-                    'The value for the {0} key in the state return '
-                    'must be a string, found {1}'
-                )
-                raise SaltException(msg.format(key, repr(ret[key])))
-
-        if ret['result'] not in [True, False, None]:
-            msg = (
-                'The value for the result key in the state return '
-                'must be True, False, or None, found {0}'
-            )
-            raise SaltException(msg.format(repr(ret['result'])))
-
-        if not isinstance(ret['changes'], dict):
-            msg = (
-                'The value for the changes key in the state return '
-                'must be a dict, found {0}'
-            )
-            raise SaltException(msg.format(repr(ret['changes'])))
 
     def verify_data(self, data):
         '''
@@ -1305,7 +1293,7 @@ class State(object):
         '''
         err = []
         for chunk in chunks:
-            err += self.verify_data(chunk)
+            err.extend(self.verify_data(chunk))
         return err
 
     def order_chunks(self, chunks):
@@ -1518,24 +1506,8 @@ class State(object):
         '''
         Extend the data reference with requisite_in arguments
         '''
-        req_in = set([
-            'require_in',
-            'watch_in',
-            'onfail_in',
-            'onchanges_in',
-            'use',
-            'use_in',
-            'prereq',
-            'prereq_in',
-            ])
-        req_in_all = req_in.union(
-                set([
-                    'require',
-                    'watch',
-                    'onfail',
-                    'onfail_stop',
-                    'onchanges',
-                    ]))
+        req_in = {'require_in', 'watch_in', 'onfail_in', 'onchanges_in', 'use', 'use_in', 'prereq', 'prereq_in'}
+        req_in_all = req_in.union({'require', 'watch', 'onfail', 'onfail_stop', 'onchanges'})
         extend = {}
         errors = []
         for id_, body in six.iteritems(high):
@@ -1802,10 +1774,11 @@ class State(object):
         ret = {'name': cdata['args'][0],
                 'result': None,
                 'changes': {},
-                'comment': 'Started in a seperate process',
+                'comment': 'Started in a separate process',
                 'proc': proc}
         return ret
 
+    @salt.utils.decorators.state.OutputUnifier('content_check', 'unify')
     def call(self, low, chunks=None, running=None, retries=1):
         '''
         Call a state directly with the low data structure, verify data
@@ -1930,13 +1903,12 @@ class State(object):
                         # run the state call in parallel, but only if not in a prereq
                         ret = self.call_parallel(cdata, low)
                     else:
+                        self.format_slots(cdata)
                         ret = self.states[cdata['full']](*cdata['args'],
-                                                          **cdata['kwargs'])
+                                                         **cdata['kwargs'])
                 self.states.inject_globals = {}
             if 'check_cmd' in low and '{0[state]}.mod_run_check_cmd'.format(low) not in self.states:
                 ret.update(self._run_check_cmd(low))
-            self.verify_ret(ret)
-            self.munge_ret_for_export(ret)
         except Exception:
             trb = traceback.format_exc()
             # There are a number of possibilities to not have the cdata
@@ -1959,12 +1931,13 @@ class State(object):
             }
         finally:
             if low.get('__prereq__'):
-                sys.modules[self.states[cdata['full']].__module__].__opts__[
-                    'test'] = test
+                sys.modules[self.states[cdata['full']].__module__].__opts__['test'] = test
 
             self.state_con.pop('runas', None)
             self.state_con.pop('runas_password', None)
-            self.verify_ret_for_export(ret)
+
+        if not isinstance(ret, dict):
+            return ret
 
         # If format_call got any warnings, let's show them to the user
         if 'warnings' in cdata:
@@ -2038,6 +2011,42 @@ class State(object):
                                                 low['retry']['until'],
                                                 low['retry']['splay'])])
         return ret
+
+    def __eval_slot(self, slot):
+        log.debug('Evaluating slot: %s', slot)
+        fmt = slot.split(':', 2)
+        if len(fmt) != 3:
+            log.warning('Malformed slot: %s', slot)
+            return slot
+        if fmt[1] != 'salt':
+            log.warning('Malformed slot: %s', slot)
+            log.warning('Only execution modules are currently supported in slots. This means slot '
+                        'should start with "__slot__:salt:"')
+            return slot
+        fun, args, kwargs = salt.utils.args.parse_function(fmt[2])
+        if not fun or fun not in self.functions:
+            log.warning('Malformed slot: %s', slot)
+            log.warning('Execution module should be specified in a function call format: '
+                        'test.arg(\'arg\', kw=\'kwarg\')')
+            return slot
+        log.debug('Calling slot: %s(%s, %s)', fun, args, kwargs)
+        return self.functions[fun](*args, **kwargs)
+
+    def format_slots(self, cdata):
+        '''
+        Read in the arguments from the low level slot syntax to make a last
+        minute runtime call to gather relevant data for the specific routine
+        '''
+        # __slot__:salt.cmd.run(foo, bar, baz=qux)
+        ctx = (('args', enumerate(cdata['args'])),
+               ('kwargs', cdata['kwargs'].items()))
+        for atype, avalues in ctx:
+            for ind, arg in avalues:
+                arg = sdecode(arg)
+                if not isinstance(arg, six.string_types) or not arg.startswith('__slot__:'):
+                    # Not a slot, skip it
+                    continue
+                cdata[atype][ind] = self.__eval_slot(arg)
 
     def verify_retry_data(self, retry_data):
         '''
@@ -2132,7 +2141,7 @@ class State(object):
         tag = _gen_tag(low)
         if self.opts.get('test', False):
             return False
-        if (low.get('failhard', False) or self.opts['failhard']) and tag in running:
+        if low.get('failhard', self.opts['failhard']) and tag in running:
             if running[tag]['result'] is None:
                 return False
             return not running[tag]['result']
@@ -2346,7 +2355,8 @@ class State(object):
                     if not r_state.startswith('prerequired'):
                         req_stats.add('pre')
                 else:
-                    req_stats.add('met')
+                    if run_dict[tag].get('__state_ran__', True):
+                        req_stats.add('met')
             if r_state.endswith('_any'):
                 if 'met' in req_stats or 'change' in req_stats:
                     if 'fail' in req_stats:
@@ -2498,8 +2508,11 @@ class State(object):
                     run_dict = self.pre
                 else:
                     run_dict = running
+                start_time, duration = _calculate_fake_duration()
                 run_dict[tag] = {'changes': {},
                                  'result': False,
+                                 'duration': duration,
+                                 'start_time': start_time,
                                  'comment': comment,
                                  '__run_num__': self.__run_num,
                                  '__sls__': low['__sls__']}
@@ -2582,13 +2595,17 @@ class State(object):
                 _cmt = 'One or more requisite failed: {0}'.format(
                     ', '.join(six.text_type(i) for i in failed_requisites)
                 )
+                start_time, duration = _calculate_fake_duration()
                 running[tag] = {
                     'changes': {},
                     'result': False,
+                    'duration': duration,
+                    'start_time': start_time,
                     'comment': _cmt,
                     '__run_num__': self.__run_num,
                     '__sls__': low['__sls__']
                 }
+                self.pre[tag] = running[tag]
             self.__run_num += 1
         elif status == 'change' and not low.get('__prereq__'):
             ret = self.call(low, chunks, running)
@@ -2600,8 +2617,11 @@ class State(object):
                 ret = self.call(low, chunks, running)
             running[tag] = ret
         elif status == 'pre':
+            start_time, duration = _calculate_fake_duration()
             pre_ret = {'changes': {},
                        'result': True,
+                       'duration': duration,
+                       'start_time': start_time,
                        'comment': 'No changes detected',
                        '__run_num__': self.__run_num,
                        '__sls__': low['__sls__']}
@@ -2609,16 +2629,24 @@ class State(object):
             self.pre[tag] = pre_ret
             self.__run_num += 1
         elif status == 'onfail':
+            start_time, duration = _calculate_fake_duration()
             running[tag] = {'changes': {},
                             'result': True,
+                            'duration': duration,
+                            'start_time': start_time,
                             'comment': 'State was not run because onfail req did not change',
+                            '__state_ran__': False,
                             '__run_num__': self.__run_num,
                             '__sls__': low['__sls__']}
             self.__run_num += 1
         elif status == 'onchanges':
+            start_time, duration = _calculate_fake_duration()
             running[tag] = {'changes': {},
                             'result': True,
+                            'duration': duration,
+                            'start_time': start_time,
                             'comment': 'State was not run because none of the onchanges reqs changed',
+                            '__state_ran__': False,
                             '__run_num__': self.__run_num,
                             '__sls__': low['__sls__']}
             self.__run_num += 1
@@ -2638,14 +2666,13 @@ class State(object):
         listeners = []
         crefs = {}
         for chunk in chunks:
-            crefs[(chunk['state'], chunk['name'])] = chunk
-            crefs[(chunk['state'], chunk['__id__'])] = chunk
+            crefs[(chunk['state'], chunk['__id__'], chunk['name'])] = chunk
             if 'listen' in chunk:
-                listeners.append({(chunk['state'], chunk['__id__']): chunk['listen']})
+                listeners.append({(chunk['state'], chunk['__id__'], chunk['name']): chunk['listen']})
             if 'listen_in' in chunk:
                 for l_in in chunk['listen_in']:
                     for key, val in six.iteritems(l_in):
-                        listeners.append({(key, val): [{chunk['state']: chunk['__id__']}]})
+                        listeners.append({(key, val, 'lookup'): [{chunk['state']: chunk['__id__']}]})
         mod_watchers = []
         errors = {}
         for l_dict in listeners:
@@ -2661,7 +2688,7 @@ class State(object):
                         if not found:
                             continue
                     for lkey, lval in six.iteritems(listen_to):
-                        if (lkey, lval) not in crefs:
+                        if not any(lkey == cref[0] and lval in cref for cref in crefs):
                             rerror = {_l_tag(lkey, lval):
                                       {
                                           'comment': 'Referenced state {0}: {1} does not exist'.format(lkey, lval),
@@ -2671,27 +2698,32 @@ class State(object):
                                       }}
                             errors.update(rerror)
                             continue
-                        to_tag = _gen_tag(crefs[(lkey, lval)])
-                        if to_tag not in running:
-                            continue
-                        if running[to_tag]['changes']:
-                            if key not in crefs:
-                                rerror = {_l_tag(key[0], key[1]):
-                                             {'comment': 'Referenced state {0}: {1} does not exist'.format(key[0], key[1]),
-                                              'name': 'listen_{0}:{1}'.format(key[0], key[1]),
-                                              'result': False,
-                                              'changes': {}}}
-                                errors.update(rerror)
+                        to_tags = [
+                            _gen_tag(data) for cref, data in six.iteritems(crefs) if lkey == cref[0] and lval in cref
+                        ]
+                        for to_tag in to_tags:
+                            if to_tag not in running:
                                 continue
-                            chunk = crefs[key]
-                            low = chunk.copy()
-                            low['sfun'] = chunk['fun']
-                            low['fun'] = 'mod_watch'
-                            low['__id__'] = 'listener_{0}'.format(low['__id__'])
-                            for req in STATE_REQUISITE_KEYWORDS:
-                                if req in low:
-                                    low.pop(req)
-                            mod_watchers.append(low)
+                            if running[to_tag]['changes']:
+                                if not any(key[0] == cref[0] and key[1] in cref for cref in crefs):
+                                    rerror = {_l_tag(key[0], key[1]):
+                                                 {'comment': 'Referenced state {0}: {1} does not exist'.format(key[0], key[1]),
+                                                  'name': 'listen_{0}:{1}'.format(key[0], key[1]),
+                                                  'result': False,
+                                                  'changes': {}}}
+                                    errors.update(rerror)
+                                    continue
+
+                                new_chunks = [data for cref, data in six.iteritems(crefs) if key[0] == cref[0] and key[1] in cref]
+                                for chunk in new_chunks:
+                                    low = chunk.copy()
+                                    low['sfun'] = chunk['fun']
+                                    low['fun'] = 'mod_watch'
+                                    low['__id__'] = 'listener_{0}'.format(low['__id__'])
+                                    for req in STATE_REQUISITE_KEYWORDS:
+                                        if req in low:
+                                            low.pop(req)
+                                    mod_watchers.append(low)
         ret = self.call_chunks(mod_watchers)
         running.update(ret)
         for err in errors:
@@ -2707,12 +2739,12 @@ class State(object):
         errors = []
         # If there is extension data reconcile it
         high, ext_errors = self.reconcile_extend(high)
-        errors += ext_errors
-        errors += self.verify_high(high)
+        errors.extend(ext_errors)
+        errors.extend(self.verify_high(high))
         if errors:
             return errors
         high, req_in_errors = self.requisite_in(high)
-        errors += req_in_errors
+        errors.extend(req_in_errors)
         high = self.apply_exclude(high)
         # Verify that the high data is structurally sound
         if errors:
@@ -2970,6 +3002,7 @@ class BaseHighState(object):
                     'top_file_merging_strategy set to \'same\', but no '
                     'default_top configuration option was set'
                 )
+            self.opts['environment'] = self.opts['default_top']
 
         if self.opts['saltenv']:
             contents = self.client.cache_file(
@@ -3353,7 +3386,7 @@ class BaseHighState(object):
         ext_matches = self._master_tops()
         for saltenv in ext_matches:
             top_file_matches = matches.get(saltenv, [])
-            if self.opts['master_tops_first']:
+            if self.opts.get('master_tops_first'):
                 first = ext_matches[saltenv]
                 second = top_file_matches
             else:
@@ -3881,24 +3914,23 @@ class BaseHighState(object):
             return err
         if not high:
             return ret
-        cumask = os.umask(0o77)
-        try:
-            if salt.utils.platform.is_windows():
-                # Make sure cache file isn't read-only
-                self.state.functions['cmd.run'](
-                    ['attrib', '-R', cfn],
-                    python_shell=False,
-                    output_loglevel='quiet')
-            with salt.utils.files.fopen(cfn, 'w+b') as fp_:
-                try:
-                    self.serial.dump(high, fp_)
-                except TypeError:
-                    # Can't serialize pydsl
-                    pass
-        except (IOError, OSError):
-            log.error('Unable to write to "state.highstate" cache file %s', cfn)
+        with salt.utils.files.set_umask(0o077):
+            try:
+                if salt.utils.platform.is_windows():
+                    # Make sure cache file isn't read-only
+                    self.state.functions['cmd.run'](
+                        ['attrib', '-R', cfn],
+                        python_shell=False,
+                        output_loglevel='quiet')
+                with salt.utils.files.fopen(cfn, 'w+b') as fp_:
+                    try:
+                        self.serial.dump(high, fp_)
+                    except TypeError:
+                        # Can't serialize pydsl
+                        pass
+            except (IOError, OSError):
+                log.error('Unable to write to "state.highstate" cache file %s', cfn)
 
-        os.umask(cumask)
         return self.state.call_high(high, orchestration_jid)
 
     def compile_highstate(self):

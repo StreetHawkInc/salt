@@ -14,7 +14,7 @@ metadata server set `metadata_server_grains: True`.
     metadata_server_grains: True
 
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 import os
@@ -48,9 +48,11 @@ def _search(prefix="latest/"):
     Recursively look up all grains in the metadata server
     '''
     ret = {}
-    linedata = http.query(os.path.join(HOST, prefix))
+    linedata = http.query(os.path.join(HOST, prefix), headers=True)
     if 'body' not in linedata:
         return ret
+    if linedata['headers'].get('Content-Type', 'text/plain') == 'application/octet-stream':
+        return linedata['body']
     for line in linedata['body'].split('\n'):
         if line.endswith('/'):
             ret[line[:-1]] = _search(prefix=os.path.join(prefix, line))
