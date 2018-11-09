@@ -19,12 +19,12 @@ import re
 import subprocess
 
 # Import salt libs
-from salt.ext import six
 import salt.utils.decorators.path
+import salt.utils.data
 import salt.utils.files
 import salt.utils.path
 import salt.utils.platform
-import salt.utils.versions
+import salt.utils.stringutils
 from salt.exceptions import (
     SaltInvocationError,
     CommandExecutionError,
@@ -154,7 +154,7 @@ def _replace_auth_key(
         with salt.utils.files.fopen(full, 'r') as _fh:
             for line in _fh:
                 # We don't need any whitespace-only containing lines or arbitrary doubled newlines
-                line = line.strip()
+                line = salt.utils.stringutils.to_unicode(line.strip())
                 if line == '':
                     continue
                 line += '\n'
@@ -171,10 +171,9 @@ def _replace_auth_key(
                     lines.append(line)
             _fh.close()
             # Re-open the file writable after properly closing it
-            with salt.utils.files.fopen(full, 'w') as _fh:
+            with salt.utils.files.fopen(full, 'wb') as _fh:
                 # Write out any changes
-                for line in lines:
-                    _fh.write(line)
+                _fh.writelines(salt.utils.data.encode(lines))
     except (IOError, OSError) as exc:
         raise CommandExecutionError(
             'Problem reading or writing to key file: {0}'.format(exc)
@@ -192,7 +191,7 @@ def _validate_keys(key_file, fingerprint_hash_type):
         with salt.utils.files.fopen(key_file, 'r') as _fh:
             for line in _fh:
                 # We don't need any whitespace-only containing lines or arbitrary doubled newlines
-                line = line.strip()
+                line = salt.utils.stringutils.to_unicode(line.strip())
                 if line == '':
                     continue
                 line += '\n'
@@ -359,11 +358,11 @@ def host_keys(keydir=None, private=True, certs=True):
                     # (e.g. OpenSSH) manage their own format(s).  Please see
                     # #20708 for a discussion about how to handle SSH key files
                     # in the future
-                    keys[kname] = _fh.readline()
+                    keys[kname] = salt.utils.stringutils.to_unicode(_fh.readline())
                     # only read the whole file if it is not in the legacy 1.1
                     # binary format
                     if keys[kname] != "SSH PRIVATE KEY FILE FORMAT 1.1\n":
-                        keys[kname] += _fh.read()
+                        keys[kname] += salt.utils.stringutils.to_unicode(_fh.read())
                     keys[kname] = keys[kname].strip()
             except (IOError, OSError):
                 keys[kname] = ''
@@ -586,7 +585,7 @@ def rm_auth_key(user,
             with salt.utils.files.fopen(full, 'r') as _fh:
                 for line in _fh:
                     # We don't need any whitespace-only containing lines or arbitrary doubled newlines
-                    line = line.strip()
+                    line = salt.utils.stringutils.to_unicode(line.strip())
                     if line == '':
                         continue
                     line += '\n'
@@ -620,9 +619,8 @@ def rm_auth_key(user,
 
             # Let the context manager do the right thing here and then
             # re-open the file in write mode to save the changes out.
-            with salt.utils.files.fopen(full, 'w') as _fh:
-                lines = [salt.utils.stringutils.to_str(_l) for _l in lines]
-                _fh.writelines(lines)
+            with salt.utils.files.fopen(full, 'wb') as _fh:
+                _fh.writelines(salt.utils.data.encode(lines))
         except (IOError, OSError) as exc:
             log.warning('Could not read/write key file: %s',
                         exc)
@@ -838,36 +836,6 @@ def _parse_openssh_output(lines, fingerprint_hash_type=None):
 
 
 @salt.utils.decorators.path.which('ssh-keygen')
-def get_known_host(user,
-                   hostname,
-                   config=None,
-                   port=None,
-                   fingerprint_hash_type=None):
-    '''
-    .. deprecated:: 2018.3.0
-        Use :py:func:`ssh.get_known_host_entries
-        <salt.modules.ssh.get_known_host_entries>` instead.
-
-    Return information about known host from the configfile, if any.
-    If there is no such key, return None.
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' ssh.get_known_host <user> <hostname>
-    '''
-    salt.utils.versions.warn_until(
-            'Neon',
-            '\'get_known_host\' has been deprecated in favor of '
-            '\'get_known_host_entries\'. \'get_known_host\' will be '
-            'removed in Salt Neon.'
-    )
-    known_hosts = get_known_host_entries(user, hostname, config, port, fingerprint_hash_type)
-    return known_hosts[0] if known_hosts else None
-
-
-@salt.utils.decorators.path.which('ssh-keygen')
 def get_known_host_entries(user,
                            hostname,
                            config=None,
@@ -900,65 +868,6 @@ def get_known_host_entries(user,
                               fingerprint_hash_type=fingerprint_hash_type)
     )
     return known_host_entries if known_host_entries else None
-
-
-@salt.utils.decorators.path.which('ssh-keyscan')
-def recv_known_host(hostname,
-                    enc=None,
-                    port=None,
-                    hash_known_hosts=True,
-                    timeout=5,
-                    fingerprint_hash_type=None):
-    '''
-    Retrieve information about host public key from remote server
-
-    .. deprecated:: 2018.3.0
-        Use :py:func:`ssh.recv_known_host_entries
-        <salt.modules.ssh.recv_known_host_entries>` instead.
-
-    hostname
-        The name of the remote host (e.g. "github.com")
-
-    enc
-        Defines what type of key is being used, can be ed25519, ecdsa ssh-rsa
-        or ssh-dss
-
-    port
-        Optional parameter, denoting the port of the remote host on which an
-        SSH daemon is running. By default the port 22 is used.
-
-    hash_known_hosts : True
-        Hash all hostnames and addresses in the known hosts file.
-
-    timeout : int
-        Set the timeout for connection attempts.  If ``timeout`` seconds have
-        elapsed since a connection was initiated to a host or since the last
-        time anything was read from that host, then the connection is closed
-        and the host in question considered unavailable.  Default is 5 seconds.
-
-        .. versionadded:: 2016.3.0
-
-    fingerprint_hash_type
-        The fingerprint hash type that the public key fingerprints were
-        originally hashed with. This defaults to ``sha256`` if not specified.
-
-        .. versionadded:: 2016.11.4
-        .. versionchanged:: 2017.7.0: default changed from ``md5`` to ``sha256``
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' ssh.recv_known_host <hostname> enc=<enc> port=<port>
-    '''
-    salt.utils.versions.warn_until(
-            'Neon',
-            '\'recv_known_host\' has been deprecated in favor of '
-            '\'recv_known_host_entries\'. \'recv_known_host\' will be '
-            'removed in Salt Neon.'
-    )
-    known_hosts = recv_known_host_entries(hostname, enc, port, hash_known_hosts, timeout, fingerprint_hash_type)
-    return known_hosts[0] if known_hosts else None
 
 
 @salt.utils.decorators.path.which('ssh-keyscan')
@@ -1257,16 +1166,16 @@ def set_known_host(user=None,
         if remove_lines:
             try:
                 with salt.utils.files.fopen(full, 'r+') as ofile:
-                    known_hosts_lines = [salt.utils.stringutils.to_unicode(_l)
-                                         for _l in list(ofile)]
+                    known_hosts_lines = salt.utils.data.decode(list(ofile))
                     # Delete from last line to first to avoid invalidating earlier indexes
                     for line_no in sorted(remove_lines, reverse=True):
                         del known_hosts_lines[line_no - 1]
                     # Write out changed known_hosts file
                     ofile.seek(0)
                     ofile.truncate()
-                    for line in known_hosts_lines:
-                        ofile.write(salt.utils.stringutils.to_str(line))
+                    ofile.writelines(
+                        salt.utils.data.decode(known_hosts_lines, to_str=True)
+                    )
             except (IOError, OSError) as exception:
                 raise CommandExecutionError(
                     "Couldn't remove old entry(ies) from known hosts file: '{0}'".format(exception)
@@ -1310,9 +1219,8 @@ def set_known_host(user=None,
 
     # write line to known_hosts file
     try:
-        with salt.utils.files.fopen(full, 'a') as ofile:
-            for line in lines:
-                ofile.write(salt.utils.stringutils.to_str(line))
+        with salt.utils.files.fopen(full, 'ab') as ofile:
+            ofile.writelines(salt.utils.data.encode(lines))
     except (IOError, OSError) as exception:
         raise CommandExecutionError(
             "Couldn't append to known hosts file: '{0}'".format(exception)

@@ -331,11 +331,14 @@ class GitPillarTestBase(GitTestBase, LoaderModuleMockMixin):
         '''
         cachedir = tempfile.mkdtemp(dir=TMP)
         self.addCleanup(shutil.rmtree, cachedir, ignore_errors=True)
-        ext_pillar_opts = salt.utils.yaml.safe_load(
-            ext_pillar_conf.format(
-                cachedir=cachedir,
-                extmods=os.path.join(cachedir, 'extmods'),
-                **self.ext_opts
+        ext_pillar_opts = {'optimization_order': [0, 1, 2]}
+        ext_pillar_opts.update(
+            salt.utils.yaml.safe_load(
+                ext_pillar_conf.format(
+                    cachedir=cachedir,
+                    extmods=os.path.join(cachedir, 'extmods'),
+                    **self.ext_opts
+                )
             )
         )
         with patch.dict(git_pillar.__opts__, ext_pillar_opts):
@@ -409,6 +412,11 @@ class GitPillarTestBase(GitTestBase, LoaderModuleMockMixin):
         with salt.utils.files.fopen(
                 os.path.join(self.admin_repo, 'bar.sls'), 'w') as fp_:
             fp_.write('included_pillar: True\n')
+        # Add another file in subdir
+        os.mkdir(os.path.join(self.admin_repo, 'subdir'))
+        with salt.utils.files.fopen(
+                os.path.join(self.admin_repo, 'subdir', 'bar.sls'), 'w') as fp_:
+            fp_.write('from_subdir: True\n')
         _push('master', 'initial commit')
 
         # Do the same with different values for "dev" branch
@@ -454,7 +462,7 @@ class GitPillarTestBase(GitTestBase, LoaderModuleMockMixin):
         # The top.sls should be the only file in this branch
         self.run_function(
             'git.rm',
-            [self.admin_repo, 'foo.sls'],
+            [self.admin_repo, 'foo.sls', os.path.join('subdir', 'bar.sls')],
             user=user)
         with salt.utils.files.fopen(
                 os.path.join(self.admin_repo, 'top.sls'), 'w') as fp_:
@@ -475,6 +483,8 @@ class GitPillarSSHTestBase(GitPillarTestBase, SSHDMixin):
 
     @classmethod
     def tearDownClass(cls):
+        if cls.case is None:
+            return
         if cls.case.sshd_proc is not None:
             cls.case.sshd_proc.send_signal(signal.SIGTERM)
         cls.case.run_state('user.absent', name=cls.username, purge=True)

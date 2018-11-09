@@ -31,6 +31,7 @@ import sys
 import salt.config
 import salt.ext.six as six
 import salt.loader
+import salt.utils.stringutils
 import salt.version
 from salt.exceptions import (
     SaltInvocationError, SaltSystemExit
@@ -45,6 +46,9 @@ try:
     from azure.common.credentials import (
         UserPassCredentials,
         ServicePrincipalCredentials,
+    )
+    from msrestazure.azure_active_directory import (
+        MSIAuthentication
     )
     from msrestazure.azure_cloud import (
         MetadataEndpointError,
@@ -109,6 +113,9 @@ def _determine_auth(**kwargs):
             credentials = UserPassCredentials(kwargs['username'],
                                               kwargs['password'],
                                               cloud_environment=cloud_env)
+    elif 'subscription_id' in kwargs:
+        credentials = MSIAuthentication(cloud_environment=cloud_env)
+
     else:
         raise SaltInvocationError(
             'Unable to determine credentials. '
@@ -122,7 +129,7 @@ def _determine_auth(**kwargs):
             'A subscription_id must be specified'
         )
 
-    subscription_id = kwargs['subscription_id']
+    subscription_id = salt.utils.stringutils.to_str(kwargs['subscription_id'])
 
     return credentials, subscription_id, cloud_env
 
@@ -132,7 +139,11 @@ def get_client(client_type, **kwargs):
     Dynamically load the selected client and return a management client object
     '''
     client_map = {'compute': 'ComputeManagement',
+                  'authorization': 'AuthorizationManagement',
+                  'dns': 'DnsManagement',
                   'storage': 'StorageManagement',
+                  'managementlock': 'ManagementLock',
+                  'monitor': 'MonitorManagement',
                   'network': 'NetworkManagement',
                   'policy': 'Policy',
                   'resource': 'ResourceManagement',
@@ -147,8 +158,10 @@ def get_client(client_type, **kwargs):
 
     map_value = client_map[client_type]
 
-    if client_type == 'subscription' or client_type == 'policy':
+    if client_type in ['policy', 'subscription']:
         module_name = 'resource'
+    elif client_type in ['managementlock']:
+        module_name = 'resource.locks'
     else:
         module_name = client_type
 

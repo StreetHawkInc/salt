@@ -47,7 +47,7 @@ def __virtual__():
     '''
     Confirm this module is on a Gentoo based system.
     '''
-    if HAS_PORTAGE and __grains__['os'] == 'Gentoo':
+    if HAS_PORTAGE and __grains__['os_family'] == 'Gentoo':
         return 'portage_config'
     return (False, 'portage_config execution module cannot be loaded: only available on Gentoo with portage installed.')
 
@@ -108,6 +108,13 @@ def _p_to_cp(p):
         ret = _porttree().dbapi.xmatch('bestmatch-visible', p)
         if ret:
             return portage.dep_getkey(ret)
+    except portage.exception.InvalidAtom:
+        pass
+
+    try:
+        ret = _porttree().dbapi.xmatch("match-all", p)
+        if ret:
+            return portage.cpv_getkey(ret[0])
     except portage.exception.InvalidAtom:
         pass
 

@@ -34,6 +34,12 @@ def clean_kwargs(**kwargs):
     functions. These keys are useful for tracking what was used to invoke
     the function call, but they may not be desirable to have if passing the
     kwargs forward wholesale.
+
+    Usage example:
+
+    .. code-block:: python
+
+        kwargs = __utils__['args.clean_kwargs'](**kwargs)
     '''
     ret = {}
     for key, val in six.iteritems(kwargs):
@@ -472,17 +478,6 @@ def format_call(fun,
             continue
         extra[key] = copy.deepcopy(value)
 
-    # We'll be showing errors to the users until Salt Fluorine comes out, after
-    # which, errors will be raised instead.
-    salt.utils.versions.warn_until(
-        'Fluorine',
-        'It\'s time to start raising `SaltInvocationError` instead of '
-        'returning warnings',
-        # Let's not show the deprecation warning on the console, there's no
-        # need.
-        _dont_call_warnings=True
-    )
-
     if extra:
         # Found unexpected keyword arguments, raise an error to the user
         if len(extra) == 1:
@@ -507,19 +502,7 @@ def format_call(fun,
                 )
             )
 
-        # Return a warning to the user explaining what's going on
-        ret.setdefault('warnings', []).append(
-            '{0}. If you were trying to pass additional data to be used '
-            'in a template context, please populate \'context\' with '
-            '\'key: value\' pairs. Your approach will work until Salt '
-            'Fluorine is out.{1}'.format(
-                msg,
-                '' if 'full' not in ret else ' Please update your state files.'
-            )
-        )
-
-        # Lets pack the current extra kwargs as template context
-        ret.setdefault('context', {}).update(extra)
+        raise SaltInvocationError(msg)
     return ret
 
 
@@ -580,3 +563,26 @@ def parse_function(s):
         return fname, args, kwargs
     else:
         return None, None, None
+
+
+def prepare_kwargs(all_kwargs, class_init_kwargs):
+    '''
+    Filter out the kwargs used for the init of the class and the kwargs used to
+    invoke the command required.
+
+    all_kwargs
+        All the kwargs the Execution Function has been invoked.
+
+    class_init_kwargs
+        The kwargs of the ``__init__`` of the class.
+    '''
+    fun_kwargs = {}
+    init_kwargs = {}
+    for karg, warg in six.iteritems(all_kwargs):
+        if karg not in class_init_kwargs:
+            if warg is not None:
+                fun_kwargs[karg] = warg
+            continue
+        if warg is not None:
+            init_kwargs[karg] = warg
+    return init_kwargs, fun_kwargs

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-    :codeauthor: :email:`Rupesh Tare <rupesht@saltstack.com>`
+    :codeauthor: Rupesh Tare <rupesht@saltstack.com>
 '''
 
 # Import Python libs
@@ -41,9 +41,11 @@ class LocalemodTestCase(TestCase, LoaderModuleMockMixin):
        X11 Model: pc105
     '''
     locale_ctl_notset = '''
-   System Locale: n/a
+       System Locale: n/a
+
        VC Keymap: n/a
       X11 Layout: n/a
+       X11 Model: n/a
     '''
     locale_ctl_out_empty = ''
     locale_ctl_out_broken = '''
@@ -86,7 +88,7 @@ class LocalemodTestCase(TestCase, LoaderModuleMockMixin):
         assert out['system_locale']['LANG'] == out['system_locale']['LANGUAGE'] == 'de_DE.utf8'
         assert isinstance(out['vc_keymap'], dict)
         assert 'data' in out['vc_keymap']
-        assert out['vc_keymap']['data'] == 'n/a'
+        assert out['vc_keymap']['data'] is None
         assert isinstance(out['x11_layout'], dict)
         assert 'data' in out['x11_layout']
         assert out['x11_layout']['data'] == 'us'
@@ -107,13 +109,13 @@ class LocalemodTestCase(TestCase, LoaderModuleMockMixin):
             assert key in out
         assert isinstance(out['system_locale'], dict)
         assert 'data' in out['system_locale']
-        assert out['system_locale']['data'] == 'n/a'
+        assert out['system_locale']['data'] is None
         assert isinstance(out['vc_keymap'], dict)
         assert 'data' in out['vc_keymap']
-        assert out['vc_keymap']['data'] == 'n/a'
+        assert out['vc_keymap']['data'] is None
         assert isinstance(out['x11_layout'], dict)
         assert 'data' in out['x11_layout']
-        assert out['x11_layout']['data'] == 'n/a'
+        assert out['x11_layout']['data'] is None
 
     @patch('salt.modules.localemod.dbus', MagicMock())
     def test_dbus_locale_parser_matches(self):
